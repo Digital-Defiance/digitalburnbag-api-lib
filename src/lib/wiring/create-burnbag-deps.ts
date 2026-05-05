@@ -62,8 +62,8 @@ import {
 import { validateDeletionConfig } from '../config/deletionConfig';
 import type { IAllBurnbagControllerDeps } from '../controllers/register-routes';
 import { createWcapSigningMiddleware } from '../middleware/wcap-signing-middleware';
-import { BurnbagUploadService } from '../services/uploadService';
 import { signCertificate } from '../services/certificate-signing-service';
+import { BurnbagUploadService } from '../services/uploadService';
 
 /** Minimal interface for the collection provider. */
 export interface ICollectionProvider {
@@ -95,6 +95,15 @@ export interface IBurnbagExternalDeps<TID extends PlatformID> {
     recipe: unknown,
     key: Uint8Array,
   ) => Promise<ReadableStream<Uint8Array>>;
+  /**
+   * Optional: return raw encrypted bytes + IV + auth tag without decrypting.
+   * Used by the E2EE download path (`GET /:id/encrypted`).
+   */
+  readVaultEncrypted?: (hash: Uint8Array) => Promise<{
+    encryptedContent: Uint8Array;
+    iv: Uint8Array;
+    authTag: Uint8Array;
+  }>;
   destroyVault?: (hash: Uint8Array) => Promise<{ destructionHash: Uint8Array }>;
   verifyProof?: (proof: unknown, bundle: unknown) => unknown;
   verifyNonAccess?: (hash: Uint8Array) => Promise<unknown>;
@@ -379,6 +388,13 @@ export function createBurnbagDeps<TID extends PlatformID>(
   // file content in memory so preview and download work.
   const devContentStore = new Map<string, Uint8Array>();
 
+  // Stores IV and authTag from client-side E2EE uploads keyed by the same
+  // hex key used in devContentStore so readVaultEncrypted can return real values.
+  const devEncryptionMetaStore = new Map<
+    string,
+    { iv: Uint8Array; authTag: Uint8Array }
+  >();
+
   // Upload
   const DEFAULT_BLOCK_SIZES = [
     512, 1024, 4096, 1_048_576, 67_108_864, 268_435_456,
@@ -421,6 +437,31 @@ export function createBurnbagDeps<TID extends PlatformID>(
         ownerId,
         ownerId,
       );
+    },
+    storePreWrappedKeyForOwner: async (
+      fileVersionId: TID,
+      encryptedSymmetricKey: Uint8Array,
+      ownerId: TID,
+    ) => {
+      await keyWrappingService.storePreWrappedKeyForMember(
+        fileVersionId,
+        encryptedSymmetricKey,
+        ownerId,
+        ownerId,
+      );
+    },
+    storeEncryptionMetadata: async (
+      vaultCreationLedgerEntryHash: Uint8Array,
+      iv: Uint8Array,
+      authTag: Uint8Array,
+    ) => {
+      let hexKey: string;
+      if (typeof vaultCreationLedgerEntryHash === 'string') {
+        hexKey = vaultCreationLedgerEntryHash;
+      } else {
+        hexKey = Buffer.from(vaultCreationLedgerEntryHash).toString('hex');
+      }
+      devEncryptionMetaStore.set(hexKey, { iv, authTag });
     },
     onAuditLog,
   };
@@ -516,6 +557,35 @@ export function createBurnbagDeps<TID extends PlatformID>(
             },
           });
         }),
+      readVaultEncrypted:
+        ext.readVaultEncrypted ??
+        (async (vaultHash: Uint8Array) => {
+          let hexKey: string;
+          if (typeof vaultHash === 'string') {
+            hexKey = vaultHash;
+          } else if (
+            vaultHash instanceof Uint8Array ||
+            Buffer.isBuffer(vaultHash)
+          ) {
+            hexKey = Buffer.from(vaultHash).toString('hex');
+          } else {
+            hexKey = '';
+          }
+          const data = devContentStore.get(hexKey) ?? new Uint8Array(0);
+          const meta = devEncryptionMetaStore.get(hexKey);
+          return {
+            encryptedContent: data,
+            iv: meta?.iv ?? new Uint8Array(12),
+            authTag: meta?.authTag ?? new Uint8Array(16),
+          };
+        }),
+      getWrappedKey: async (fileVersionId: TID, requesterId: TID) => {
+        const entry = await keyWrappingService.getWrappedKey(
+          fileVersionId,
+          requesterId,
+        );
+        return entry?.encryptedSymmetricKey ?? null;
+      },
       onAuditLog,
       verifyNonAccess: ext.verifyNonAccess,
     },
@@ -579,12 +649,16 @@ export function createBurnbagDeps<TID extends PlatformID>(
       signCertificate: (certificate) => {
         const privateKey = ext.wcapOperatorPrivateKey?.();
         if (!privateKey) {
-          throw new Error('Operator private key not available for certificate signing');
+          throw new Error(
+            'Operator private key not available for certificate signing',
+          );
         }
         return signCertificate(certificate, privateKey);
       },
       operatorPublicKey: ext.wcapOperatorPublicKey
-        ? Buffer.from(ext.wcapOperatorPublicKey() ?? new Uint8Array(0)).toString('hex')
+        ? Buffer.from(
+            ext.wcapOperatorPublicKey() ?? new Uint8Array(0),
+          ).toString('hex')
         : '',
       cooldownDays: deletionConfig.cooldownDays,
       getExpiredPendingDeletions: async () => {

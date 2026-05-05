@@ -160,7 +160,18 @@ export class UploadController<
       vaultContainerId,
       durabilityTier,
       durationDays,
+      wrappedKeyB64,
+      ivB64,
+      authTagB64,
     } = req.body;
+
+    // Build optional E2EE metadata when the client pre-encrypted the file
+    const preEncryptedWrappedKeyB64: string | undefined =
+      typeof wrappedKeyB64 === 'string' ? wrappedKeyB64 : undefined;
+    const preEncryptedIvB64: string | undefined =
+      typeof ivB64 === 'string' ? ivB64 : undefined;
+    const preEncryptedAuthTagB64: string | undefined =
+      typeof authTagB64 === 'string' ? authTagB64 : undefined;
 
     // When Joule is enabled, require durability tier and duration
     if (isBurnbagJouleEnabled()) {
@@ -277,6 +288,9 @@ export class UploadController<
       totalSizeBytes: parsedTotalSizeBytes,
       targetFolderId: parsedFolderId as TID,
       vaultContainerId: parsedVaultContainerId as TID,
+      preEncryptedWrappedKeyB64,
+      preEncryptedIvB64,
+      preEncryptedAuthTagB64,
     });
     return {
       statusCode: 201,

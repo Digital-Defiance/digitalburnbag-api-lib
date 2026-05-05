@@ -25,8 +25,8 @@ export default {
     ],
   },
   transformIgnorePatterns: [
-    '/node_modules/\\.store/(?!.*(@faker-js)-)',
-    '/node_modules/(?!(\\.store|@faker-js)/)',
+    '/node_modules/\\.store/(?!.*(@faker-js|@scure|@otplib|otplib|@noble)-)',
+    '/node_modules/(?!(\\.store|@faker-js|@scure|@otplib|otplib|@noble)/)',
   ],
   moduleFileExtensions: ['ts', 'js', 'html'],
   coverageDirectory: '../coverage/digitalburnbag-api-lib',

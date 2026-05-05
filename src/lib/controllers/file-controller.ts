@@ -46,6 +46,7 @@ interface IFileHandlers extends TypedHandlers {
   getNonAccessProof: ApiRequestHandler<BurnbagResponse>;
   previewFile: ApiRequestHandler<BurnbagResponse>;
   downloadFile: ApiRequestHandler<BurnbagResponse>;
+  downloadEncryptedFile: ApiRequestHandler<BurnbagResponse>;
   updateMetadata: ApiRequestHandler<BurnbagResponse>;
   deleteFile: ApiRequestHandler<BurnbagResponse>;
   restoreFile: ApiRequestHandler<BurnbagResponse>;
@@ -110,6 +111,12 @@ export class FileController<
     });
     previewFileRoute.middleware = wcapMiddleware;
 
+    const downloadEncryptedFileRoute = routeConfig('get', '/:id/encrypted', {
+      handlerKey: 'downloadEncryptedFile',
+      ...auth,
+    });
+    downloadEncryptedFileRoute.middleware = wcapMiddleware;
+
     const downloadFileRoute = routeConfig('get', '/:id', {
       handlerKey: 'downloadFile',
       ...auth,
@@ -136,6 +143,7 @@ export class FileController<
         ...auth,
       }),
       previewFileRoute,
+      downloadEncryptedFileRoute,
       downloadFileRoute,
       routeConfig('patch', '/:id', { handlerKey: 'updateMetadata', ...auth }),
       routeConfig('delete', '/:id', { handlerKey: 'deleteFile', ...auth }),
@@ -153,6 +161,7 @@ export class FileController<
       getNonAccessProof: this.handleGetNonAccessProof.bind(this),
       previewFile: this.handlePreviewFile.bind(this),
       downloadFile: this.handleDownloadFile.bind(this),
+      downloadEncryptedFile: this.handleDownloadEncryptedFile.bind(this),
       updateMetadata: this.handleUpdateMetadata.bind(this),
       deleteFile: this.handleDeleteFile.bind(this),
       restoreFile: this.handleRestoreFile.bind(this),
@@ -586,6 +595,63 @@ export class FileController<
     return {
       statusCode: 200,
       response: {} as IApiMessageResponse,
+    };
+  }
+
+  private async handleDownloadEncryptedFile(
+    req: ExpressRequest,
+  ): Promise<IStatusCodeResponse<BurnbagResponse>> {
+    const requesterId = this.safeParseId(req.user?.id as string);
+    if (!requesterId)
+      return {
+        statusCode: 401,
+        response: {
+          message: getDigitalBurnbagTranslation(
+            DigitalBurnbagStrings.Api_Error_AuthMissing,
+          ),
+          error: getDigitalBurnbagTranslation(
+            DigitalBurnbagStrings.Api_Http_Unauthorized,
+          ),
+        } as unknown as BurnbagResponse,
+      };
+    const fileId = this.safeParseId(req.params.id as string);
+    if (!fileId)
+      return {
+        statusCode: 400,
+        response: {
+          message: getDigitalBurnbagTranslation(
+            DigitalBurnbagStrings.Api_Error_InvalidFileId,
+          ),
+          error: getDigitalBurnbagTranslation(
+            DigitalBurnbagStrings.Api_Http_BadRequest,
+          ),
+        } as unknown as BurnbagResponse,
+      };
+
+    const [metadata, encrypted] = await Promise.all([
+      this.deps.fileService.getFileMetadata(fileId, requesterId),
+      this.deps.fileService.getEncryptedFileContent(fileId, requesterId, {
+        ipAddress: req.ip ?? '0.0.0.0',
+        timestamp: new Date(),
+      }),
+    ]);
+
+    const payload = {
+      fileName: metadata.fileName,
+      mimeType: metadata.mimeType ?? 'application/octet-stream',
+      encryptedContent: Buffer.from(encrypted.encryptedContent).toString(
+        'base64',
+      ),
+      iv: Buffer.from(encrypted.iv).toString('base64'),
+      authTag: Buffer.from(encrypted.authTag).toString('base64'),
+      encryptedSymmetricKey: Buffer.from(
+        encrypted.encryptedSymmetricKey,
+      ).toString('base64'),
+    };
+
+    return {
+      statusCode: 200,
+      response: payload as unknown as BurnbagResponse,
     };
   }
 

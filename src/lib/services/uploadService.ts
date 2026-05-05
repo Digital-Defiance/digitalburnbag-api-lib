@@ -180,7 +180,11 @@ export class BurnbagUploadService<
     const assembledData = await this['reassembleChunks'](session);
 
     // Encrypt to get the exact ciphertext byte count.
-    const { ciphertext } = await this['deps'].encrypt(assembledData);
+    const encryptFn = this['deps'].encrypt;
+    if (!encryptFn) {
+      throw new Error('FEATURE_DISABLED');
+    }
+    const { ciphertext } = await encryptFn(assembledData);
 
     // The encrypted size is the plaintext + AES-GCM overhead bytes.
     const encryptedBytes = Math.max(
